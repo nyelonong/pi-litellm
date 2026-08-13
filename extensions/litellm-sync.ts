@@ -98,8 +98,9 @@ function claudeMeta(lower: string): ModelCaps | null {
   if (!isFable && !/(?:opus|sonnet|haiku)[-.]?(?:4[-.]?[5-9]|5)/.test(lower)) return null;
 
   // Haiku kept a 200K window and a 64K output cap while the other tiers moved to 1M.
+  // It takes no effort parameter, so it reasons on no path this provider can reach.
   if (lower.includes("haiku")) {
-    return { reasoning: true, contextWindow: 200000, maxTokens: 64000, thinkingLevelMap: EFFORT_NO_XHIGH };
+    return { reasoning: false, contextWindow: 200000, maxTokens: 64000 };
   }
   if (isFable || lower.includes("opus")) {
     return { reasoning: true, contextWindow: 1000000, maxTokens: 128000, thinkingLevelMap: EFFORT_WITH_XHIGH };

@@ -26,7 +26,8 @@ const EXPECTED: Record<string, Expected> = {
   "anthropic/claude-fable-5": { reasoning: true, contextWindow: 1000000, maxTokens: 128000 },
   "anthropic/claude-opus-4.8": { reasoning: true, contextWindow: 1000000, maxTokens: 128000, xhigh: "xhigh" },
   "anthropic/claude-sonnet-4.6": { reasoning: true, contextWindow: 1000000, maxTokens: 128000, xhigh: "max" },
-  "anthropic/claude-haiku-4.5": { reasoning: true, contextWindow: 200000, maxTokens: 64000 },
+  // Verified against the proxy: an effort parameter is accepted and produces no reasoning tokens.
+  "anthropic/claude-haiku-4.5": { reasoning: false, contextWindow: 200000, maxTokens: 64000 },
 
   // GPT-5.6: reasoning models, 1,050,000 context, 128,000 max output.
   "azure_ai/gpt-5.6-terra": { reasoning: true, contextWindow: 1050000, maxTokens: 128000, xhigh: "xhigh" },
