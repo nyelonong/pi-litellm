@@ -38,6 +38,7 @@ interface ProviderConfig {
   baseUrl: string;
   apiKey: string;
   api: string;
+  declared: Map<string, ModelCaps>; // hand-written per-model overrides from models.json
 }
 
 // ---------------------------------------------------------------------------
@@ -68,42 +69,64 @@ function displayName(id: string): string {
   return `${human} (${label})`;
 }
 
-/** Guess capabilities from model id */
-function modelMeta(id: string): {
-  reasoning: boolean;
-  contextWindow: number;
-  maxTokens: number;
+/** Build the model-list endpoint from the configured base URL */
+export function modelsUrl(baseUrl: string): string {
+  // Pi's own provider block wants a baseUrl ending in /v1, so most configs already carry it.
+  const origin = baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+  return `${origin}/v1/models`;
+}
+
+/** Capabilities for one model. Every field is optional: an omitted field means "not known here". */
+export interface ModelCaps {
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
   thinkingLevelMap?: Record<string, string | null>;
-} {
+}
+
+// Used only when neither the id heuristic nor models.json says anything.
+export const DEFAULT_CONTEXT_WINDOW = 128000;
+export const DEFAULT_MAX_TOKENS = 16384;
+
+const EFFORT_WITH_XHIGH ={ low: "low", medium: "medium", high: "high", xhigh: "xhigh" };
+const EFFORT_XHIGH_AS_MAX = { low: "low", medium: "medium", high: "high", xhigh: "max" };
+const EFFORT_NO_XHIGH = { low: "low", medium: "medium", high: "high", xhigh: null };
+
+function claudeMeta(lower: string): ModelCaps | null {
+  const isFable = lower.includes("fable") || lower.includes("mythos");
+  // 4.5 was the first reasoning tier; anything older falls through as unknown.
+  if (!isFable && !/(?:opus|sonnet|haiku)[-.]?(?:4[-.]?[5-9]|5)/.test(lower)) return null;
+
+  // Haiku kept a 200K window and a 64K output cap while the other tiers moved to 1M.
+  if (lower.includes("haiku")) {
+    return { reasoning: true, contextWindow: 200000, maxTokens: 64000, thinkingLevelMap: EFFORT_NO_XHIGH };
+  }
+  if (isFable || lower.includes("opus")) {
+    return { reasoning: true, contextWindow: 1000000, maxTokens: 128000, thinkingLevelMap: EFFORT_WITH_XHIGH };
+  }
+  if (lower.includes("sonnet")) {
+    return { reasoning: true, contextWindow: 1000000, maxTokens: 128000, thinkingLevelMap: EFFORT_XHIGH_AS_MAX };
+  }
+  return null;
+}
+
+function gptMeta(lower: string): ModelCaps {
+  if (/gpt-5[-.]?6/.test(lower)) {
+    return { reasoning: true, contextWindow: 1050000, maxTokens: 128000, thinkingLevelMap: EFFORT_WITH_XHIGH };
+  }
+  // The rest of the GPT-5 line reasons too, but its windows are not known here.
+  return { reasoning: true };
+}
+
+/**
+ * Capabilities inferred from a model id, or null when the id is unrecognized.
+ * Returning null rather than a default is what keeps a guess from overwriting models.json.
+ */
+export function modelMeta(id: string): ModelCaps | null {
   const lower = id.toLowerCase();
-
-  const isOpus = lower.includes("opus");
-  const isSonnet = lower.includes("sonnet");
-  const isHaiku = lower.includes("haiku");
-  const isClaude = lower.includes("claude");
-  const isClaude4x = /claude[\-.]?(opus|sonnet|haiku)?[\-.]?4/.test(lower);
-  const isClaude3x = /claude[\-.]?3[\-.]?(5|7)/.test(lower);
-  const isModernClaude = isClaude4x || isClaude3x;
-
-  const reasoning = isModernClaude;
-
-  const contextWindow = isModernClaude ? 200000 : isClaude ? 200000 : 128000;
-
-  const maxTokens = isOpus
-    ? 32768
-    : isSonnet
-    ? 16384
-    : isHaiku
-    ? 8192
-    : 16384;
-
-  const thinkingLevelMap: Record<string, string | null> | undefined = reasoning
-    ? isOpus
-      ? { low: "low", medium: "medium", high: "high", xhigh: "max" }
-      : { low: "low", medium: "medium", high: "high", xhigh: null }
-    : undefined;
-
-  return { reasoning, contextWindow, maxTokens, thinkingLevelMap };
+  if (lower.includes("claude")) return claudeMeta(lower);
+  if (/gpt-5/.test(lower)) return gptMeta(lower);
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +138,7 @@ function resolveConfig(): ProviderConfig {
     baseUrl: "http://localhost:4000",
     apiKey: "sk-cedar-local",
     api: "anthropic-messages",
+    declared: new Map(),
   };
 
   // Try reading from models.json for non-env-var config
@@ -129,10 +153,21 @@ function resolveConfig(): ProviderConfig {
         .replace(/"(?:\\.|[^"\\])*"|,(\s*[}\]])/g, (m, tail) => tail ?? (m[0] === '"' ? m : ""));
       const parsed = JSON.parse(stripped) as { providers?: Record<string, any> };
       const p = parsed?.providers?.litellm ?? {};
+      const declared = new Map<string, ModelCaps>();
+      for (const m of (p.models ?? []) as Array<Record<string, any>>) {
+        if (typeof m?.id !== "string") continue;
+        declared.set(m.id, {
+          reasoning: m.reasoning,
+          contextWindow: m.contextWindow,
+          maxTokens: m.maxTokens,
+          thinkingLevelMap: m.thinkingLevelMap,
+        });
+      }
       fromModelsJson = {
         baseUrl: p.baseUrl,
         apiKey: p.apiKey,
         api: p.api,
+        declared,
       };
     } catch {
       // Ignore parse errors — fall through to defaults
@@ -144,6 +179,7 @@ function resolveConfig(): ProviderConfig {
     baseUrl: process.env.LITELLM_BASE_URL ?? fromModelsJson.baseUrl ?? defaults.baseUrl,
     apiKey: process.env.LITELLM_API_KEY ?? fromModelsJson.apiKey ?? defaults.apiKey,
     api: fromModelsJson.api ?? defaults.api,
+    declared: fromModelsJson.declared ?? defaults.declared,
   };
 }
 
@@ -156,7 +192,7 @@ async function syncModels(pi: ExtensionAPI): Promise<void> {
 
   let models: LiteLLMModel[];
   try {
-    const res = await fetch(`${config.baseUrl}/v1/models`, {
+    const res = await fetch(modelsUrl(config.baseUrl), {
       headers: { Authorization: `Bearer ${config.apiKey}` },
     });
     if (!res.ok) {
@@ -181,16 +217,18 @@ async function syncModels(pi: ExtensionAPI): Promise<void> {
     apiKey: config.apiKey,
     api: config.api as any,
     models: models.map((m) => {
-      const meta = modelMeta(m.id);
+      // A hand-written models.json entry outranks the id heuristic, field by field.
+      const guess = modelMeta(m.id) ?? {};
+      const declared = config.declared.get(m.id) ?? {};
       return {
         id: m.id,
         name: displayName(m.id),
-        reasoning: meta.reasoning,
-        thinkingLevelMap: meta.thinkingLevelMap,
+        reasoning: declared.reasoning ?? guess.reasoning ?? false,
+        thinkingLevelMap: declared.thinkingLevelMap ?? guess.thinkingLevelMap,
         input: ["text", "image"] as ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: meta.contextWindow,
-        maxTokens: meta.maxTokens,
+        contextWindow: declared.contextWindow ?? guess.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+        maxTokens: declared.maxTokens ?? guess.maxTokens ?? DEFAULT_MAX_TOKENS,
       };
     }),
   });
