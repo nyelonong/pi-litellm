@@ -41,13 +41,7 @@ export default function (pi: ExtensionAPI) {
         },
       });
 
-      if (!response.ok) {
-        ctx.ui.notify(
-          `LiteLLM cost extension: /model/info returned ${response.status}`,
-          "warning"
-        );
-        return;
-      }
+      if (!response.ok) return;
 
       const payload = (await response.json()) as {
         data: Array<{
@@ -88,12 +82,8 @@ export default function (pi: ExtensionAPI) {
           "info"
         );
       }
-    } catch (err: any) {
-      // Non-fatal: extension still works if header is available
-      ctx.ui.notify(
-        `LiteLLM cost extension: could not fetch /model/info (${err.message})`,
-        "warning"
-      );
+    } catch {
+      return;
     }
   });
 
