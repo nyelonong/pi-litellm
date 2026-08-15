@@ -1,8 +1,8 @@
 /**
  * LiteLLM Session Grouping Extension for Pi
  *
- * Injects `litellm_session_id` into every outgoing request payload so all
- * API calls within one Pi session are grouped in LiteLLM's session logs.
+ * Injects `litellm_session_id` into LiteLLM requests so all API calls within
+ * one Pi session are grouped in LiteLLM's session logs.
  *
  * Uses `before_provider_request` to modify the payload without touching
  * provider config (avoids apiKey/baseUrl side effects).
@@ -29,8 +29,8 @@ export default function (pi: ExtensionAPI) {
     sessionId = uuidMatch?.[1] ?? filename;
   });
 
-  pi.on("before_provider_request", (event) => {
-    if (!sessionId) return;
+  pi.on("before_provider_request", (event, ctx) => {
+    if (!sessionId || ctx.model?.provider !== "litellm") return;
 
     // Inject litellm_session_id as a top-level field in the request body.
     // LiteLLM reads this from the root of the payload (not from metadata)
